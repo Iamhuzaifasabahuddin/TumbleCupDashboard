@@ -26,8 +26,16 @@ display: none;
 </style>
 """, unsafe_allow_html=True)
 
+# Define product costs
+PRODUCT_COSTS = {
+    "Classic Tumbler": 1850,
+    "Can Glass": 1250,
+    "Coffee Mug": 1500
+}
+
+
 def get_orders(month_number=None):
-    orders_df = conn.read(worksheet="Tumble_cup")
+    orders_df = conn.read(worksheet="Tumble_cup", ttl=0)
 
     if orders_df.empty:
         return pd.DataFrame()
@@ -37,6 +45,7 @@ def get_orders(month_number=None):
         orders_df = orders_df[orders_df["Order Date"].dt.month == month_number]
 
     return orders_df
+
 
 def update_order_status(order_id, new_status):
     orders_df = conn.read(worksheet="Tumble_cup", ttl=0)
@@ -64,6 +73,7 @@ def delete_order(order_id):
         return True
     return False
 
+
 def send_email_notification(to_email, subject, content):
     try:
         msg = EmailMessage()
@@ -81,6 +91,47 @@ def send_email_notification(to_email, subject, content):
     except Exception as e:
         st.error(f"Failed to send email: {str(e)}")
         return False
+
+
+def calculate_sales_metrics(orders_df):
+    """Calculate sales metrics including costs and profits"""
+    if 'Item Name' not in orders_df.columns or 'Base Price' not in orders_df.columns:
+        return {
+            "total_sales": 0,
+            "total_costs": 0,
+            "total_profit": 0,
+            "product_breakdown": pd.DataFrame()
+        }
+
+    # Ensure price is numeric
+    orders_df['Base Price'] = pd.to_numeric(orders_df['Base Price'], errors='coerce')
+
+    # Add cost column based on product type
+    orders_df['Cost'] = orders_df['Item Name'].map(PRODUCT_COSTS)
+
+    # Calculate profit for each item
+    orders_df['Profit'] = orders_df['Base Price'] - orders_df['Cost']
+
+    # Calculate totals
+    total_sales = orders_df['Base Price'].sum()
+    total_costs = orders_df['Cost'].sum()
+    total_profit = orders_df['Profit'].sum()
+
+    # Product breakdown
+    product_breakdown = orders_df.groupby('Item Name').agg({
+        'ID': 'count',
+        'Base Price': 'sum',
+        'Cost': 'sum',
+        'Profit': 'sum'
+    }).rename(columns={'ID': 'Count'}).reset_index()
+
+    return {
+        "total_sales": total_sales,
+        "total_costs": total_costs,
+        "total_profit": total_profit,
+        "product_breakdown": product_breakdown
+    }
+
 
 with st.container():
     st.header("Admin Panel")
@@ -124,12 +175,7 @@ with st.container():
                     filtered_df = orders_df[orders_df['Status'].isin(status_filter) &
                                             orders_df['Payment Status'].isin(payment_filter)]
 
-
-                    # display_df = filtered_df.copy()
-                    # display_df["Order Date"] = display_df["display_date"]
-                    # display_df = display_df.drop(columns=["display_date"])
                     st.dataframe(filtered_df)
-
 
                     st.subheader("Update Order Status")
                     col1, col2, col3 = st.columns(3)
@@ -174,7 +220,36 @@ with st.container():
 
                 st.dataframe(filtered_df)
 
-                # Order management section
+                # Sales Metrics Section
+                st.subheader("Sales Metrics")
+
+                # Only calculate metrics for confirmed payments
+                confirmed_orders = filtered_df[filtered_df['Payment Status'] == 'Confirmed'].copy()
+                metrics = calculate_sales_metrics(confirmed_orders)
+
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Sales (PKR)", f"{metrics['total_sales']:,.2f}")
+                with col2:
+                    st.metric("Total Costs (PKR)", f"{metrics['total_costs']:,.2f}")
+                with col3:
+                    st.metric("Total Profit (PKR)", f"{metrics['total_profit']:,.2f}")
+
+                st.subheader("Product Sales Breakdown")
+                if not metrics['product_breakdown'].empty:
+                    metrics_df = metrics['product_breakdown']
+                    metrics_df.index = range(1, len(metrics_df) + 1)
+                    st.dataframe(metrics_df)
+
+                    st.subheader("Product Sales Comparison")
+                    chart_data = metrics['product_breakdown'].set_index('Item Name')
+                    st.bar_chart(chart_data[['Count']])
+
+                    st.subheader("Profit by Product")
+                    st.bar_chart(chart_data[['Profit']])
+                else:
+                    st.info("No confirmed orders to show product breakdown.")
+
                 st.subheader("Update Order & Payment Status")
                 col1, col2, col3 = st.columns(3)
 
@@ -235,38 +310,6 @@ with st.container():
                         file_name=f"tumble_cup_orders_{datetime.today().strftime('%Y-%m-%d')}.csv",
                         mime="text/csv"
                     )
-                #
-                # # Backup and analytics section
-                # st.subheader("Data Management Tools")
-                #
-                # if st.button("Backup to Google Drive"):
-                #     try:
-                #         # Create a timestamp for the backup
-                #         timestamp = datetime.today().strftime('%Y%m%d_%H%M%S')
-                #         backup_sheet_name = f"Orders_Backup_{timestamp}"
-                #
-                #         # Create a new worksheet for the backup
-                #         conn.update(worksheet=backup_sheet_name, data=orders_df)
-                #
-                #         st.success(f"Data backed up successfully to sheet '{backup_sheet_name}'")
-                #     except Exception as e:
-                #         st.error(f"Backup failed: {str(e)}")
-                #
-                # # Add monthly sales analytics
-                # st.subheader("Monthly Sales Analytics")
-                #
-                # # Group by day and count orders
-                # if not filtered_df.empty:
-                #     filtered_df["day"] = filtered_df["Order Date"].dt.day
-                #     daily_orders = filtered_df.groupby("day").size().reset_index(name="orders")
-                #
-                #     # Create chart
-                #     st.bar_chart(daily_orders.set_index("day"))
-                #
-                #     # Total revenue
-                #     if "order_total" in filtered_df.columns:
-                #         total_revenue = filtered_df["order_total"].sum()
-                #         st.metric("Total Revenue", f"${total_revenue:.2f}")
         else:
             st.info("No orders found for the selected month.")
     elif admin_password:
