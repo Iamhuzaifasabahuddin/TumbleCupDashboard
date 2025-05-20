@@ -65,6 +65,37 @@ def update_payment_status(order_id, new_status):
     return False
 
 
+# New functions for updating by Order Number
+def update_by_order_number(order_number, new_status, status_field="Status"):
+    """
+    Update all orders with matching order number
+
+    Args:
+        order_number: Order number to match (e.g., "TC00001")
+        new_status: New status to set
+        status_field: Column to update ("Status" or "Payment Status")
+
+    Returns:
+        tuple: (success_count, list of updated order IDs)
+    """
+    orders_df = conn.read(worksheet="Tumble_cup", ttl=0)
+
+    # Find orders matching the order number
+    matching_orders = orders_df[orders_df["Order Number"].astype(str).str.contains(order_number, case=False)]
+
+    if matching_orders.empty:
+        return 0, []
+
+    # Update the status for matching orders
+    matching_ids = matching_orders["ID"].tolist()
+    orders_df.loc[orders_df["ID"].isin(matching_ids), status_field] = new_status
+
+    # Save the changes
+    conn.update(worksheet="Tumble_cup", data=orders_df)
+
+    return len(matching_ids), matching_ids
+
+
 def delete_order(order_id):
     orders_df = conn.read(worksheet="Tumble_cup", ttl=0)
     if order_id in orders_df["ID"].values:
@@ -178,7 +209,8 @@ with tab1:
     if not orders_df.empty:
         st.dataframe(filtered_df)
 
-        st.subheader("Update Order & Payment Status")
+        # Original ID-based update section
+        st.subheader("Update by ID")
         col1, col2, col3 = st.columns(3)
 
         with col1:
@@ -228,6 +260,109 @@ with tab1:
                     st.rerun()
                 else:
                     st.error(f"Failed to delete order #{delete_order_id}")
+
+        st.subheader("Update by Order Number")
+        order_num_col1, order_num_col2, order_num_col3 = st.columns(3)
+
+        with order_num_col1:
+            order_number = st.text_input("Order Number (e.g., TC00001)",
+                                         placeholder="Enter full or partial order number",
+                                         key="order_number_input")
+
+            # Option to see matching orders
+            if order_number:
+                matches = filtered_df[filtered_df["Order Number"].astype(str).str.contains(order_number, case=False)]
+                match_count = len(matches)
+
+                if match_count > 0:
+                    st.info(f"Found {match_count} matching orders")
+                    if st.checkbox("Show matching orders", key="show_matches"):
+                        st.dataframe(matches[["Order Number", "Name", "Status", "Payment Status"]])
+                else:
+                    st.warning("No matching orders found")
+
+        with order_num_col2:
+            # Radio to select which status to update
+            update_type = st.radio("What to update",
+                                   ["Order Status", "Payment Status", "Both"],
+                                   key="order_num_update_type")
+
+            if "Order Status" in update_type:
+                order_num_status = st.selectbox("New Order Status",
+                                                ["Pending", "Processing", "Shipped", "Delivered", "Cancelled"],
+                                                key="order_num_order_status")
+
+            if "Payment Status" in update_type:
+                order_num_payment_status = st.selectbox("New Payment Status",
+                                                        ["Pending", "Processing", "Confirmed", "Cancelled"],
+                                                        key="order_num_payment_status")
+
+        with order_num_col3:
+            if st.button("Update All Matching Orders", key="update_by_order_num_btn"):
+                if not order_number:
+                    st.error("Please enter an Order Number")
+                else:
+                    updates_made = False
+
+                    # Update order status if selected
+                    if update_type in ["Order Status", "Both"]:
+                        success_count, updated_ids = update_by_order_number(
+                            order_number,
+                            order_num_status,
+                            "Status"
+                        )
+
+                        if success_count > 0:
+                            st.success(f"Updated order status to '{order_num_status}' for {success_count} orders")
+                            updates_made = True
+
+                            # Send email notifications
+                            for order_id in updated_ids:
+                                try:
+                                    customer_email = orders_df.loc[orders_df["ID"] == order_id, "Email"].values[0]
+                                    order_num = orders_df.loc[orders_df["ID"] == order_id, "Order Number"].values[0]
+                                    email_content = f"""
+                                    <p>Dear Customer,</p>
+                                    <p>Your order <strong>{order_num}</strong> status has been updated to <strong>{order_num_status}</strong>.</p>
+                                    <p>Thank you for shopping with Tumble Cup!</p>
+                                    """
+                                    send_email_notification(customer_email, "Tumble Cup Order Status Update",
+                                                            email_content)
+                                except Exception as e:
+                                    st.warning(f"Could not send email for order #{order_id}: {str(e)}")
+
+                    # Update payment status if selected
+                    if update_type in ["Payment Status", "Both"]:
+                        success_count, updated_ids = update_by_order_number(
+                            order_number,
+                            order_num_payment_status,
+                            "Payment Status"
+                        )
+
+                        if success_count > 0:
+                            st.success(
+                                f"Updated payment status to '{order_num_payment_status}' for {success_count} orders")
+                            updates_made = True
+
+                            # Send email notifications
+                            for order_id in updated_ids:
+                                try:
+                                    customer_email = orders_df.loc[orders_df["ID"] == order_id, "Email"].values[0]
+                                    order_num = orders_df.loc[orders_df["ID"] == order_id, "Order Number"].values[0]
+                                    email_content = f"""
+                                    <p>Dear Customer,</p>
+                                    <p>Your order <strong>{order_num}</strong> payment status has been updated to <strong>{order_num_payment_status}</strong>.</p>
+                                    <p>Thank you for shopping with Tumble Cup!</p>
+                                    """
+                                    send_email_notification(customer_email, "Tumble Cup Payment Status Update",
+                                                            email_content)
+                                except Exception as e:
+                                    st.warning(f"Could not send email for order #{order_id}: {str(e)}")
+
+                    if updates_made:
+                        st.rerun()
+                    else:
+                        st.error(f"No orders found matching '{order_number}'")
 
         # Export to CSV button
         if st.button("Export Orders to CSV", key="export_csv_status"):
