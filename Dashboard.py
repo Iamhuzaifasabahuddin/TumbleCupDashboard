@@ -5,6 +5,7 @@ from email.message import EmailMessage
 
 import pandas as pd
 import streamlit as st
+from PIL import Image
 from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="Tumble Cup Admin", page_icon="📊", layout="wide")
@@ -161,8 +162,17 @@ def calculate_sales_metrics(orders_df):
     }
 
 
-# Main title for the app
-st.title("Tumble Cup Admin Dashboard")
+# # Main title for the app
+# st.title("Tumble Cup Dashboard")
+#
+# import streamlit as st
+
+# Title (already centered by Streamlit)
+st.markdown("<h1 style='text-align: center;'>Tumble Cup Dashboard</h1>", unsafe_allow_html=True)
+image = Image.open("Tumblecup.jpeg")
+left_co, cent_co,last_co = st.columns(3)
+with cent_co:
+    st.image(image, width=500)
 
 # Create tabs
 tab1, tab2 = st.tabs(["Status Update", "Analytics"])
