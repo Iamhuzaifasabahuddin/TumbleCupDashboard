@@ -27,7 +27,6 @@ display: none;
 </style>
 """, unsafe_allow_html=True)
 
-# Define product costs
 PRODUCT_COSTS = {
     "Classic Tumbler": 1850,
     "Can Glass": 1250,
@@ -66,7 +65,6 @@ def update_payment_status(order_id, new_status):
     return False
 
 
-# New functions for updating by Order Number
 def update_by_order_number(order_number, new_status, status_field="Status", tracking_id=None, partner=None):
     """
     Update all orders with matching order number
@@ -101,6 +99,12 @@ def update_by_order_number(order_number, new_status, status_field="Status", trac
 
 
 def delete_order(order_id):
+    """
+    Delete all orders with matching order number
+    :param order_id:
+    :return: None
+
+    """
     orders_df = conn.read(worksheet="Tumble_cup", ttl=0)
     if order_id in orders_df["ID"].values:
         orders_df = orders_df[orders_df["ID"] != order_id]
@@ -110,6 +114,13 @@ def delete_order(order_id):
 
 
 def send_email_notification(to_email, subject, content):
+    """
+    Send email notification
+    :param to_email: Clients email address
+    :param subject: Subject
+    :param content: Email content
+    :return: None
+    """
     gmail_user = "teamtumblecup@gmail.com"
     try:
         app_password = st.secrets["Email"]["Password"]
@@ -151,7 +162,6 @@ def calculate_sales_metrics(orders_df):
     total_costs = orders_df['Total Cost'].sum()
     total_profit = orders_df['Profit'].sum()
 
-    # Standard product breakdown by item name
     product_breakdown = orders_df.groupby('Item Name').agg({
         'Item Quantity': 'sum',
         'Base Price': 'sum',
@@ -159,7 +169,6 @@ def calculate_sales_metrics(orders_df):
         'Profit': 'sum'
     }).rename(columns={'Item Quantity': 'Total Quantity'}).reset_index()
 
-    # Style breakdown for custom and handpainted items
     style_breakdown = None
     if 'Item Style' in orders_df.columns:
 
@@ -188,12 +197,6 @@ def calculate_sales_metrics(orders_df):
     }
 
 
-# # Main title for the app
-# st.title("Tumble Cup Dashboard")
-#
-# import streamlit as st
-
-# Title (already centered by Streamlit)
 st.markdown("<h1 style='text-align: center;'>Tumble Cup Dashboard</h1>", unsafe_allow_html=True)
 image = Image.open("Tumblecup.jpeg")
 left_co, cent_co, last_co = st.columns(3)
@@ -240,50 +243,48 @@ with tab1:
     if not orders_df.empty:
         st.dataframe(filtered_df)
 
-        # Original ID-based update section
         st.subheader("Update by ID")
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            order_id = st.number_input("Order ID", min_value=int(orders_df['ID'].min()),
-                                       max_value=int(orders_df['ID'].max()) if not orders_df.empty else 1,
-                                       step=1, key="status_order_id")
-            payment_order_id = st.number_input("Payment Order ID", min_value=int(orders_df['ID'].min()),
-                                               max_value=int(orders_df['ID'].max()) if not orders_df.empty else 1,
-                                               step=1, key="payment_order_id")
+            # order_id = st.number_input("Order ID", min_value=int(orders_df['ID'].min()),
+            #                            max_value=int(orders_df['ID'].max()) if not orders_df.empty else 1,
+            #                            step=1, key="status_order_id")
+            # payment_order_id = st.number_input("Payment Order ID", min_value=int(orders_df['ID'].min()),
+            #                                    max_value=int(orders_df['ID'].max()) if not orders_df.empty else 1,
+            #                                    step=1, key="payment_order_id")
             delete_order_id = st.number_input("Delete Order ID", min_value=int(orders_df['ID'].min()),
                                               max_value=int(orders_df['ID'].max()) if not orders_df.empty else 1,
                                               step=1, key="delete_order_id")
 
+        # with col2:
+        #     new_status = st.selectbox("New Status",
+        #                               ["Pending", "Processing", "Shipped", "Delivered", "Cancelled"],
+        #                               key="new_status")
+        #     payment_new_status = st.selectbox("Payment New Status",
+        #                                       ["Pending", "Processing", "Confirmed", "Cancelled"],
+        #                                       key="payment_new_status")
+
         with col2:
-            new_status = st.selectbox("New Status",
-                                      ["Pending", "Processing", "Shipped", "Delivered", "Cancelled"],
-                                      key="new_status")
-            payment_new_status = st.selectbox("Payment New Status",
-                                              ["Pending", "Processing", "Confirmed", "Cancelled"],
-                                              key="payment_new_status")
-
-        with col3:
-            if st.button("Update Status", key="update_status_btn"):
-                if update_order_status(order_id, new_status):
-                    st.success(f"Order #{order_id} status updated to {new_status}")
-                    customer_email = orders_df.loc[orders_df["ID"] == order_id, "Email"].values[0]
-                    email_content = f"Your order #{order_id} status has been updated to {new_status}."
-                    send_email_notification(customer_email, "Tumble Cup Order Status Update", email_content)
-                    st.rerun()
-                else:
-                    st.error(f"Failed to update order #{order_id}")
-
-            if st.button("Update Payment Status", key="update_payment_btn"):
-                if update_payment_status(payment_order_id, payment_new_status):
-                    st.success(f"Order #{payment_order_id} payment status updated to {payment_new_status}")
-                    # Send email notification to customer
-                    customer_email = orders_df.loc[orders_df["ID"] == payment_order_id, "Email"].values[0]
-                    email_content = f"Your order #{payment_order_id} payment status has been updated to {payment_new_status}."
-                    send_email_notification(customer_email, "Tumble Cup Payment Status Update", email_content)
-                    st.rerun()
-                else:
-                    st.error(f"Failed to update payment status for order #{payment_order_id}")
+            # if st.button("Update Status", key="update_status_btn"):
+            #     if update_order_status(order_id, new_status):
+            #         st.success(f"Order #{order_id} status updated to {new_status}")
+            #         customer_email = orders_df.loc[orders_df["ID"] == order_id, "Email"].values[0]
+            #         email_content = f"Your order #{order_id} status has been updated to {new_status}."
+            #         send_email_notification(customer_email, "Tumble Cup Order Status Update", email_content)
+            #         st.rerun()
+            #     else:
+            #         st.error(f"Failed to update order #{order_id}")
+            #
+            # if st.button("Update Payment Status", key="update_payment_btn"):
+            #     if update_payment_status(payment_order_id, payment_new_status):
+            #         st.success(f"Order #{payment_order_id} payment status updated to {payment_new_status}")
+            #         customer_email = orders_df.loc[orders_df["ID"] == payment_order_id, "Email"].values[0]
+            #         email_content = f"Your order #{payment_order_id} payment status has been updated to {payment_new_status}."
+            #         send_email_notification(customer_email, "Tumble Cup Payment Status Update", email_content)
+            #         st.rerun()
+            #     else:
+            #         st.error(f"Failed to update payment status for order #{payment_order_id}")
 
             if st.button("Delete Order", key="delete_order_btn"):
                 if delete_order(delete_order_id):
@@ -453,7 +454,6 @@ with tab2:
             st.subheader("Profit by Product")
             st.bar_chart(chart_data[['Profit']])
 
-            # Add style breakdown analysis for custom and handpainted items
             if 'style_breakdown' in metrics and not metrics['style_breakdown'].empty:
                 st.subheader("Custom & Handpainted Items Analysis")
                 metrics_df_style = metrics['style_breakdown']
@@ -501,7 +501,6 @@ with tab2:
                 payment_counts = filtered_df['Payment Status'].value_counts().reset_index()
                 payment_counts.columns = ['Payment Status', 'Count']
                 st.bar_chart(payment_counts.set_index('Payment Status'))
-
 
             st.subheader("Cost vs Profit Ratio")
             if metrics['total_sales'] > 0:
