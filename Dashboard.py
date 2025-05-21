@@ -67,7 +67,7 @@ def update_payment_status(order_id, new_status):
 
 
 # New functions for updating by Order Number
-def update_by_order_number(order_number, new_status, status_field="Status"):
+def update_by_order_number(order_number, new_status, status_field="Status", tracking_id=None, partner=None):
     """
     Update all orders with matching order number
 
@@ -75,23 +75,26 @@ def update_by_order_number(order_number, new_status, status_field="Status"):
         order_number: Order number to match (e.g., "TC00001")
         new_status: New status to set
         status_field: Column to update ("Status" or "Payment Status")
+        tracking_id: Optional tracking ID to add when shipping
 
     Returns:
         tuple: (success_count, list of updated order IDs)
     """
     orders_df = conn.read(worksheet="Tumble_cup", ttl=0)
 
-    # Find orders matching the order number
     matching_orders = orders_df[orders_df["Order Number"].astype(str).str.contains(order_number, case=False)]
 
     if matching_orders.empty:
         return 0, []
-
-    # Update the status for matching orders
     matching_ids = matching_orders["ID"].tolist()
     orders_df.loc[orders_df["ID"].isin(matching_ids), status_field] = new_status
 
-    # Save the changes
+    if tracking_id and status_field == "Status" and new_status == "Shipped" and partner:
+        if 'Tracking ID' not in orders_df.columns:
+            orders_df['Tracking ID'] = ""
+        orders_df.loc[orders_df["ID"].isin(matching_ids), "Tracking ID"] = tracking_id
+        orders_df.loc[orders_df["ID"].isin(matching_ids), "Tracking Partner"] = partner
+
     conn.update(worksheet="Tumble_cup", data=orders_df)
 
     return len(matching_ids), matching_ids
@@ -134,7 +137,8 @@ def calculate_sales_metrics(orders_df):
             "total_sales": 0,
             "total_costs": 0,
             "total_profit": 0,
-            "product_breakdown": pd.DataFrame()
+            "product_breakdown": pd.DataFrame(),
+            "style_breakdown": pd.DataFrame()
         }
 
     orders_df['Base Price'] = pd.to_numeric(orders_df['Base Price'], errors='coerce')
@@ -147,6 +151,7 @@ def calculate_sales_metrics(orders_df):
     total_costs = orders_df['Total Cost'].sum()
     total_profit = orders_df['Profit'].sum()
 
+    # Standard product breakdown by item name
     product_breakdown = orders_df.groupby('Item Name').agg({
         'Item Quantity': 'sum',
         'Base Price': 'sum',
@@ -154,11 +159,32 @@ def calculate_sales_metrics(orders_df):
         'Profit': 'sum'
     }).rename(columns={'Item Quantity': 'Total Quantity'}).reset_index()
 
+    # Style breakdown for custom and handpainted items
+    style_breakdown = None
+    if 'Item Style' in orders_df.columns:
+
+        style_df = orders_df.copy()
+        if style_df['Item Style'].isna().any():
+            style_df['Item Style'] = style_df['Item Style'].fillna('Regular')
+
+        custom_styles = style_df[style_df['Item Style'].str.contains('Custom|Hand painted|Handpainted',
+                                                                     case=False, na=False)]
+
+        if not custom_styles.empty:
+            style_breakdown = custom_styles.groupby(['Item Style', 'Item Name']).agg({
+                'Item Quantity': 'sum',
+                'Base Price': 'sum',
+                'Total Cost': 'sum',
+                'Total': 'sum',
+                'Profit': 'sum'
+            }).rename(columns={'Item Quantity': 'Total Quantity'}).reset_index()
+
     return {
         "total_sales": total_sales,
         "total_costs": total_costs,
         "total_profit": total_profit,
-        "product_breakdown": product_breakdown
+        "product_breakdown": product_breakdown,
+        "style_breakdown": style_breakdown if style_breakdown is not None else pd.DataFrame()
     }
 
 
@@ -170,14 +196,11 @@ def calculate_sales_metrics(orders_df):
 # Title (already centered by Streamlit)
 st.markdown("<h1 style='text-align: center;'>Tumble Cup Dashboard</h1>", unsafe_allow_html=True)
 image = Image.open("Tumblecup.jpeg")
-left_co, cent_co,last_co = st.columns(3)
+left_co, cent_co, last_co = st.columns(3)
 with cent_co:
     st.image(image, width=500)
 
-# Create tabs
 tab1, tab2 = st.tabs(["Status Update", "Analytics"])
-
-# Common month selection for both tabs
 with st.sidebar:
     st.header("Filter Options")
     selected_month = st.selectbox(
@@ -211,8 +234,6 @@ with st.sidebar:
 
         filtered_df = orders_df[orders_df['Status'].isin(status_filter) &
                                 orders_df['Payment Status'].isin(payment_filter)]
-
-# Tab 1: Status Update
 with tab1:
     st.header("Order Status Management")
 
@@ -271,15 +292,15 @@ with tab1:
                 else:
                     st.error(f"Failed to delete order #{delete_order_id}")
 
+        st.divider()
         st.subheader("Update by Order Number")
-        order_num_col1, order_num_col2, order_num_col3 = st.columns(3)
+        order_num_col1, order_num_col2, order_num_col3, order_num_col4 = st.columns(4)
 
         with order_num_col1:
             order_number = st.text_input("Order Number (e.g., TC00001)",
                                          placeholder="Enter full or partial order number",
                                          key="order_number_input")
 
-            # Option to see matching orders
             if order_number:
                 matches = filtered_df[filtered_df["Order Number"].astype(str).str.contains(order_number, case=False)]
                 match_count = len(matches)
@@ -292,56 +313,75 @@ with tab1:
                     st.warning("No matching orders found")
 
         with order_num_col2:
-            # Radio to select which status to update
             update_type = st.radio("What to update",
                                    ["Order Status", "Payment Status", "Both"],
                                    key="order_num_update_type")
 
+        with order_num_col3:
             if "Order Status" in update_type:
                 order_num_status = st.selectbox("New Order Status",
                                                 ["Pending", "Processing", "Shipped", "Delivered", "Cancelled"],
                                                 key="order_num_order_status")
-
+                batch_tracking_id = None
+                partner = None
+                if order_num_status == "Shipped":
+                    batch_tracking_id = st.text_input("Shipping/Tracking ID",
+                                                      placeholder="Enter tracking number for all matching orders",
+                                                      key="batch_tracking_id_input")
+                    partner = st.text_input("Shipping Partner",
+                                            placeholder="Enter shipping partner",
+                                            key="shipping_partner_input")
             if "Payment Status" in update_type:
                 order_num_payment_status = st.selectbox("New Payment Status",
                                                         ["Pending", "Processing", "Confirmed", "Cancelled"],
                                                         key="order_num_payment_status")
 
-        with order_num_col3:
+        with order_num_col4:
             if st.button("Update All Matching Orders", key="update_by_order_num_btn"):
                 if not order_number:
                     st.error("Please enter an Order Number")
                 else:
                     updates_made = False
-
-                    # Update order status if selected
                     if update_type in ["Order Status", "Both"]:
                         success_count, updated_ids = update_by_order_number(
                             order_number,
                             order_num_status,
-                            "Status"
+                            "Status",
+                            batch_tracking_id if order_num_status == "Shipped" else None,
+                            partner if order_num_status == "Shipped" else None
                         )
 
                         if success_count > 0:
-                            st.success(f"Updated order status to '{order_num_status}' for {success_count} orders")
-                            updates_made = True
+                            success_msg = f"Updated order status to '{order_num_status}' for {success_count} orders"
+                            if batch_tracking_id and order_num_status == "Shipped":
+                                success_msg += f" with tracking ID: {batch_tracking_id} and Shipping Partner: {partner}"
+                            st.success(success_msg)
 
-                            # Send email notifications
+                            updates_made = True
                             for order_id in updated_ids:
                                 try:
                                     customer_email = orders_df.loc[orders_df["ID"] == order_id, "Email"].values[0]
                                     order_num = orders_df.loc[orders_df["ID"] == order_id, "Order Number"].values[0]
                                     email_content = f"""
-                                    <p>Dear Customer,</p>
-                                    <p>Your order <strong>{order_num}</strong> status has been updated to <strong>{order_num_status}</strong>.</p>
-                                    <p>Thank you for shopping with Tumble Cup!</p>
-                                    """
+                                            <p>Dear Customer,</p>
+                                            <p>Your order <strong>{order_num}</strong> status has been updated to <strong>{order_num_status}</strong>.</p>
+                                            """
+
+                                    if batch_tracking_id and order_num_status == "Shipped":
+                                        email_content += f"""
+                                                <p>Your shipment is on its way! You can track your package using the tracking number: 
+                                                <strong>{batch_tracking_id} via {partner}</strong></p>
+                                                """
+
+                                    email_content += "<p>Thank you for shopping with Tumble Cup!</p>"
+
                                     send_email_notification(customer_email, "Tumble Cup Order Status Update",
                                                             email_content)
+
+                                    break
                                 except Exception as e:
                                     st.warning(f"Could not send email for order #{order_id}: {str(e)}")
 
-                    # Update payment status if selected
                     if update_type in ["Payment Status", "Both"]:
                         success_count, updated_ids = update_by_order_number(
                             order_number,
@@ -354,18 +394,18 @@ with tab1:
                                 f"Updated payment status to '{order_num_payment_status}' for {success_count} orders")
                             updates_made = True
 
-                            # Send email notifications
                             for order_id in updated_ids:
                                 try:
                                     customer_email = orders_df.loc[orders_df["ID"] == order_id, "Email"].values[0]
                                     order_num = orders_df.loc[orders_df["ID"] == order_id, "Order Number"].values[0]
                                     email_content = f"""
-                                    <p>Dear Customer,</p>
-                                    <p>Your order <strong>{order_num}</strong> payment status has been updated to <strong>{order_num_payment_status}</strong>.</p>
-                                    <p>Thank you for shopping with Tumble Cup!</p>
-                                    """
+                                            <p>Dear Customer,</p>
+                                            <p>Your order <strong>{order_num}</strong> payment status has been updated to <strong>{order_num_payment_status}</strong>.</p>
+                                            <p>Thank you for shopping with Tumble Cup!</p>
+                                            """
                                     send_email_notification(customer_email, "Tumble Cup Payment Status Update",
                                                             email_content)
+                                    break
                                 except Exception as e:
                                     st.warning(f"Could not send email for order #{order_id}: {str(e)}")
 
@@ -373,8 +413,6 @@ with tab1:
                         st.rerun()
                     else:
                         st.error(f"No orders found matching '{order_number}'")
-
-        # Export to CSV button
         if st.button("Export Orders to CSV", key="export_csv_status"):
             csv = filtered_df.to_csv(index=False)
             st.download_button(
@@ -385,16 +423,12 @@ with tab1:
             )
     else:
         st.info("No orders found for the selected month.")
-
-# Tab 2: Analytics
 with tab2:
     st.header("Sales Analytics")
 
     if not orders_df.empty:
-        # Sales Metrics Section
         st.subheader("Sales Metrics")
 
-        # Only calculate metrics for confirmed payments
         confirmed_orders = filtered_df[filtered_df['Payment Status'] == 'Confirmed'].copy()
         metrics = calculate_sales_metrics(confirmed_orders)
 
@@ -419,7 +453,41 @@ with tab2:
             st.subheader("Profit by Product")
             st.bar_chart(chart_data[['Profit']])
 
-            # Additional analytics
+            # Add style breakdown analysis for custom and handpainted items
+            if 'style_breakdown' in metrics and not metrics['style_breakdown'].empty:
+                st.subheader("Custom & Handpainted Items Analysis")
+                metrics_df_style = metrics['style_breakdown']
+
+                metrics_df_style.index = range(1, len(metrics_df) + 1)
+
+                st.dataframe(metrics_df_style)
+
+                st.subheader("Custom & Handpainted Items Comparison")
+                style_chart = metrics['style_breakdown'].groupby('Item Style').agg({
+                    'Total Quantity': 'sum',
+                    'Profit': 'sum'
+                }).reset_index()
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("Quantity by Style")
+                    st.bar_chart(style_chart.set_index('Item Style')['Total Quantity'])
+
+                with col2:
+                    st.subheader("Profit by Style")
+                    st.bar_chart(style_chart.set_index('Item Style')['Profit'])
+                if len(style_chart) > 1:
+                    style_chart['Profit per Item'] = style_chart['Profit'] / style_chart['Total Quantity']
+                    st.subheader("Profitability Analysis")
+                    st.bar_chart(style_chart.set_index('Item Style')['Profit per Item'])
+                    style_chart['Profit %'] = (style_chart['Profit'] / style_chart['Profit'].sum()) * 100
+                    style_chart['Quantity %'] = (style_chart['Total Quantity'] / style_chart[
+                        'Total Quantity'].sum()) * 100
+
+                    st.subheader("Contribution Analysis")
+                    contribution_df = style_chart[['Item Style', 'Profit %', 'Quantity %']]
+                    st.dataframe(contribution_df)
+
             col1, col2 = st.columns(2)
 
             with col1:
@@ -434,24 +502,21 @@ with tab2:
                 payment_counts.columns = ['Payment Status', 'Count']
                 st.bar_chart(payment_counts.set_index('Payment Status'))
 
-            # Cost vs Profit Ratio Pie Chart
+
             st.subheader("Cost vs Profit Ratio")
             if metrics['total_sales'] > 0:
-                # Create pie chart data
                 pie_data = {
                     'Category': ['Cost', 'Profit'],
                     'Value': [metrics['total_costs'], metrics['total_profit']]
                 }
                 pie_df = pd.DataFrame(pie_data)
 
-                # Calculate percentages for display
                 cost_percentage = (metrics['total_costs'] / metrics['total_sales']) * 100
                 profit_percentage = (metrics['total_profit'] / metrics['total_sales']) * 100
 
                 col1, col2 = st.columns([3, 2])
 
                 with col1:
-                    # Display pie chart
                     fig = {
                         'data': [{
                             'values': pie_df['Value'],
@@ -465,14 +530,11 @@ with tab2:
                     st.plotly_chart(fig, use_container_width=True)
 
                 with col2:
-                    # Display metrics with percentages
                     st.metric("Cost Percentage", f"{cost_percentage:.2f}%")
                     st.metric("Profit Percentage", f"{profit_percentage:.2f}%")
                     st.metric("Profit Margin", f"{(profit_percentage):.2f}%")
             else:
                 st.info("No sales data available to calculate cost vs profit ratio.")
-
-            # Export to CSV button for analytics data
             if st.button("Export Analytics to CSV", key="export_csv_analytics"):
                 analytics_csv = metrics_df.to_csv(index=False)
                 st.download_button(
