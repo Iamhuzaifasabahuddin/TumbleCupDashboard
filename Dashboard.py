@@ -458,7 +458,7 @@ with tab2:
                 st.subheader("Custom & Handpainted Items Analysis")
                 metrics_df_style = metrics['style_breakdown']
 
-                # metrics_df_style.index = range(1, len(metrics_df_style) + 1)
+                metrics_df_style.index = range(1, len(metrics_df_style) + 1)
 
                 st.dataframe(metrics_df_style)
 
