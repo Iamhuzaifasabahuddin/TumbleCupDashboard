@@ -19,11 +19,16 @@ current_year = datetime.today().year
 
 st.markdown("""
 <style>
-.st-emotion-cache-1weic72 {
-display: none;
-}
+# .st-emotion-cache-1weic72 {
+# display: none;
+# }
     #MainMenu {visibility: hidden;}
     header {visibility: hidden;}
+    
+.label_visibility {
+    visibility: visible;
+}
+    
 </style>
 """, unsafe_allow_html=True)
 
@@ -197,13 +202,27 @@ def calculate_sales_metrics(orders_df):
     }
 
 
+def get_date_orders(date, month, year):
+    orders_df = conn.read(worksheet="Tumble_cup", ttl=0)
+
+    if orders_df.empty:
+        return pd.DataFrame()
+    orders_df["Order Date"] = pd.to_datetime(orders_df["Order Date"], errors="coerce")
+
+    orders_df = orders_df[(orders_df["Order Date"].dt.day == date) & (orders_df["Order Date"].dt.month == month)
+                          & (orders_df["Order Date"].dt.year == year)
+                          ]
+
+    return orders_df
+
+
 st.markdown("<h1 style='text-align: center;'>Tumble Cup Dashboard</h1>", unsafe_allow_html=True)
 image = Image.open("Tumblecup.jpeg")
 left_co, cent_co, last_co = st.columns(3)
 with cent_co:
     st.image(image, width=500)
 
-tab1, tab2 = st.tabs(["Status Update", "Analytics"])
+tab1, tab2, tab3 = st.tabs(["Status Update", "Filter", "Analytics"])
 with st.sidebar:
     st.header("Filter Options")
     selected_month = st.selectbox(
@@ -436,7 +455,23 @@ with tab1:
             )
     else:
         st.info("No orders found for the selected month.")
+
 with tab2:
+    st.header("Order Filtering 🥅")
+    date = st.date_input("Select a date", value="today")
+
+    if date:
+        dd = date.day
+        month = date.month
+        year = date.year
+
+    df = get_date_orders(dd, month, year)
+    if df.empty:
+        st.error(f"No orders found for {dd}-{month}-{year}")
+    else:
+        st.dataframe(df)
+
+with tab3:
     st.header("Sales Analytics")
 
     if not orders_df.empty:
