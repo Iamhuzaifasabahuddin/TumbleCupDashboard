@@ -336,12 +336,23 @@ with tab1:
                 order_num_payment_status = st.selectbox("New Payment Status",
                                                         ["Pending", "Processing", "Confirmed", "Cancelled"],
                                                         key="order_num_payment_status")
-
         with order_num_col4:
-            if st.button("Update All Matching Orders", key="update_by_order_num_btn"):
-                if not order_number:
-                    st.error("Please enter an Order Number")
-                else:
+            show_button = True
+
+            if not order_number:
+                show_button = False
+                st.warning("Please enter an Order Number")
+
+            if update_type in ["Order Status", "Both"] and order_num_status == "Shipped":
+                if not batch_tracking_id:
+                    show_button = False
+                    st.warning("Tracking ID is required when status is 'Shipped'")
+                if not partner:
+                    show_button = False
+                    st.warning("Shipping Partner is required when status is 'Shipped'")
+
+            if show_button:
+                if st.button("Update All Matching Orders", key="update_by_order_num_btn"):
                     updates_made = False
                     if update_type in ["Order Status", "Both"]:
                         success_count, updated_ids = update_by_order_number(
@@ -363,22 +374,23 @@ with tab1:
                                 try:
                                     customer_email = orders_df.loc[orders_df["ID"] == order_id, "Email"].values[0]
                                     order_num = orders_df.loc[orders_df["ID"] == order_id, "Order Number"].values[0]
-                                    email_content = f"""
-                                            <p>Dear Customer,</p>
-                                            <p>Your order <strong>{order_num}</strong> status has been updated to <strong>{order_num_status}</strong>.</p>
-                                            """
 
-                                    if batch_tracking_id and order_num_status == "Shipped":
-                                        email_content += f"""
+                                    if order_num_status != "Shipped":
+                                        email_content = f"""
+                                                <p>Dear Customer,</p>
+                                                <p>Your order <strong>{order_num}</strong> status has been updated to <strong>{order_num_status}</strong>.</p>
+                                                """
+                                    else:
+                                        email_content = f"""
+                                                <p>Dear Customer,</p>
+                                                <p>Your order <strong>{order_num}</strong> status has been updated to <strong>{order_num_status}</strong>.</p>
                                                 <p>Your shipment is on its way! You can track your package using the tracking number: 
                                                 <strong>{batch_tracking_id} via {partner}</strong></p>
                                                 """
 
                                     email_content += "<p>Thank you for shopping with Tumble Cup!</p>"
-
                                     send_email_notification(customer_email, "Tumble Cup Order Status Update",
                                                             email_content)
-
                                     break
                                 except Exception as e:
                                     st.warning(f"Could not send email for order #{order_id}: {str(e)}")
