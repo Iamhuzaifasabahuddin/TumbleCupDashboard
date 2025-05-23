@@ -8,7 +8,7 @@ import streamlit as st
 from PIL import Image
 from streamlit_gsheets import GSheetsConnection
 
-st.set_page_config(page_title="Tumble Cup Admin", page_icon="📊", layout="centered")
+st.set_page_config(page_title="Tumble Cup Admin", page_icon="📊", layout="centered", initial_sidebar_state="collapsed")
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
