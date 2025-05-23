@@ -8,7 +8,7 @@ import streamlit as st
 from PIL import Image
 from streamlit_gsheets import GSheetsConnection
 
-st.set_page_config(page_title="Tumble Cup Admin", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Tumble Cup Admin", page_icon="📊", layout="centered")
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
@@ -277,7 +277,6 @@ with tab1:
         st.info("Enter Password!")
     elif st.session_state.user_entered.get("password") != st.secrets["Password"]["Password"]:
         st.warning("Access denied! ⛔")
-
 
 with tab2:
     if st.session_state.user_entered.get("password") == st.secrets["Password"]["Password"]:
