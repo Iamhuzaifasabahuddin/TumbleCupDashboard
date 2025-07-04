@@ -256,7 +256,8 @@ with st.sidebar:
 
         filtered_df = orders_df[orders_df['Order Status'].isin(status_filter) &
                                 orders_df['Payment Status'].isin(payment_filter)]
-
+    else:
+        st.warning("No orders found!")
 # if 'password' not in st.session_state:
 #     password = f"{st.secrets["Password"]["Password"]}"
 
