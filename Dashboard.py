@@ -248,13 +248,13 @@ with st.sidebar:
             if orders_df.empty:
                 st.warning("No such orders found!")
 
-        status_filter = st.multiselect("Filter by Status", options=orders_df['Status'].unique().tolist(),
-                                       default=orders_df['Status'].unique().tolist())
+        status_filter = st.multiselect("Filter by Status", options=orders_df['Order Status'].unique().tolist(),
+                                       default=orders_df['Order Status'].unique().tolist())
         payment_filter = st.multiselect("Filter by Payment Status",
                                         options=orders_df['Payment Status'].unique().tolist(),
                                         default=orders_df['Payment Status'].unique().tolist())
 
-        filtered_df = orders_df[orders_df['Status'].isin(status_filter) &
+        filtered_df = orders_df[orders_df['Order Status'].isin(status_filter) &
                                 orders_df['Payment Status'].isin(payment_filter)]
 
 # if 'password' not in st.session_state:
