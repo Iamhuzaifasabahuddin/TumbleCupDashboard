@@ -2,15 +2,21 @@ import calendar
 import smtplib
 from datetime import datetime
 from email.message import EmailMessage
-
 import pandas as pd
 import streamlit as st
 from PIL import Image
-from streamlit_gsheets import GSheetsConnection
+from notion_client import Client
 
-st.set_page_config(page_title="Tumble Cup Admin", page_icon="📊", layout="centered", initial_sidebar_state="collapsed")
+st.set_page_config(
+    page_title="Tumble Cup Admin",
+    page_icon="📊",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
 
-conn = st.connection("gsheets", type=GSheetsConnection)
+# Initialize Notion client
+notion = Client(auth=st.secrets["Notion"]["NOTION_TOKEN"])
+DATASOURCE_ID = st.secrets["Notion"]["DATASOURCE_ID"]
 
 month_list = list(calendar.month_name)[1:]
 current_month = datetime.today().month
@@ -19,16 +25,7 @@ current_year = datetime.today().year
 
 st.markdown("""
 <style>
-# .st-emotion-cache-1weic72 {
-# display: none;
-# }
-    #MainMenu {visibility: hidden;}
-    header {visibility: hidden;}
-    
-.label_visibility {
-    visibility: visible;
-}
-    
+/* Add your custom CSS here */
 </style>
 """, unsafe_allow_html=True)
 
@@ -39,97 +36,186 @@ PRODUCT_COSTS = {
 }
 
 
+def notion_date_to_datetime(notion_date):
+    """Convert Notion date format to datetime"""
+    if notion_date and 'start' in notion_date:
+        return pd.to_datetime(notion_date['start'])
+    return None
+
+
+def get_property_value(properties, prop_name):
+    """Extract value from Notion property based on its type"""
+    if prop_name not in properties:
+        return None
+
+    prop = properties[prop_name]
+    prop_type = prop['type']
+
+    if prop_type == 'title':
+        return prop['title'][0]['plain_text'] if prop['title'] else ""
+    elif prop_type == 'rich_text':
+        return prop['rich_text'][0]['plain_text'] if prop['rich_text'] else ""
+    elif prop_type == 'number':
+        return prop['number']
+    elif prop_type == 'select':
+        return prop['select']['name'] if prop['select'] else ""
+    elif prop_type == 'status':
+        return prop['status']['name'] if prop['status'] else ""
+    elif prop_type == 'date':
+        return notion_date_to_datetime(prop['date'])
+    elif prop_type == 'email':
+        return prop['email']
+    elif prop_type == 'phone_number':
+        return prop['phone_number']
+    elif prop_type == 'checkbox':
+        return prop['checkbox']
+    else:
+        return None
+
+
+def notion_to_dataframe(results):
+    """Convert Notion query results to pandas DataFrame"""
+    data = []
+    for page in results:
+        props = page['properties']
+        row = {
+            'ID': page['id'],
+            'Order Number': get_property_value(props, 'Order Number'),
+            'Name': get_property_value(props, 'Customer Name'),
+            'Email': get_property_value(props, 'Email'),
+            'Phone': get_property_value(props, 'Phone'),
+            'Address': get_property_value(props, 'Address'),
+            'City': get_property_value(props, 'City'),
+            'Item Name': get_property_value(props, 'Item'),
+            'Item Quantity': get_property_value(props, 'Quantity'),
+            'Item Style': get_property_value(props, 'Item Style'),
+            'Base Price': get_property_value(props, 'Base Price'),
+            'Price': get_property_value(props, 'Price'),
+            'Total': get_property_value(props, 'Total'),
+            'Order Date': get_property_value(props, 'Date'),
+            'Status': get_property_value(props, 'Status'),
+            'Payment Status': get_property_value(props, 'Payment Status'),
+            'Payment Method': get_property_value(props, 'Payment Method'),
+            'Tracking ID': get_property_value(props, 'Tracking ID'),
+            'Tracking Partner': get_property_value(props, 'Tracking Partner'),
+        }
+        data.append(row)
+
+    return pd.DataFrame(data)
+
+@st.cache_data(ttl=600)
 def get_orders(month_number=None):
-    orders_df = conn.read(worksheet="Tumble_cup", ttl=0)
+    """Fetch orders from Notion data source"""
+    try:
+        # Query all pages from the data source
+        all_results = []
+        has_more = True
+        start_cursor = None
 
-    if orders_df.empty:
+        while has_more:
+            if start_cursor:
+                response = notion.data_sources.query(
+                    data_source_id=DATASOURCE_ID,
+                    start_cursor=start_cursor,
+                    sorts=[{"timestamp": "created_time", "direction": "ascending"}]
+                )
+            else:
+                response = notion.data_sources.query(
+                    data_source_id=DATASOURCE_ID,
+                    sorts=[{"timestamp": "created_time", "direction": "ascending"}]
+                )
+
+            all_results.extend(response['results'])
+            has_more = response['has_more']
+            start_cursor = response.get('next_cursor')
+
+        orders_df = notion_to_dataframe(all_results)
+
+        if orders_df.empty:
+            return pd.DataFrame()
+
+        # Filter by month if specified
+        if month_number:
+            orders_df = orders_df[orders_df["Order Date"].dt.month == month_number]
+
+        return orders_df
+    except Exception as e:
+        st.error(f"Error fetching orders: {e}")
         return pd.DataFrame()
-    orders_df["Order Date"] = pd.to_datetime(orders_df["Order Date"], errors="coerce")
 
-    if month_number:
-        orders_df = orders_df[orders_df["Order Date"].dt.month == month_number]
 
-    return orders_df
+def update_notion_property(page_id, property_name, value, property_type='select'):
+    """Update a specific property in Notion"""
+    try:
+        properties = {}
+
+        if property_type == 'select':
+            properties[property_name] = {"select": {"name": value}}
+        elif property_type == 'status':
+            properties[property_name] = {"status": {"name": value}}
+        elif property_type == 'rich_text':
+            properties[property_name] = {"rich_text": [{"text": {"content": value}}]}
+        elif property_type == 'number':
+            properties[property_name] = {"number": value}
+
+        notion.pages.update(page_id=page_id, properties=properties)
+        return True
+    except Exception as e:
+        st.error(f"Error updating property: {e}")
+        return False
 
 
 def update_order_status(order_id, new_status):
-    orders_df = conn.read(worksheet="Tumble_cup", ttl=0)
-    if order_id in orders_df["ID"].values:
-        orders_df.loc[orders_df["ID"] == order_id, "Status"] = new_status
-        conn.update(worksheet="Tumble_cup", data=orders_df)
-        return True
-    return False
+    """Update order status in Notion"""
+    return update_notion_property(order_id, 'Status', new_status, 'select')
 
 
 def update_payment_status(order_id, new_status):
-    orders_df = conn.read(worksheet="Tumble_cup", ttl=0)
-    if order_id in orders_df["ID"].values:
-        orders_df.loc[orders_df["ID"] == order_id, "Payment Status"] = new_status
-        conn.update(worksheet="Tumble_cup", data=orders_df)
-        return True
-    return False
+    """Update payment status in Notion"""
+    return update_notion_property(order_id, 'Payment Status', new_status, 'status')
 
 
 def update_by_order_number(order_number, new_status, status_field="Status", tracking_id=None, partner=None):
     """
     Update all orders with matching order number
-
-    Args:
-        order_number: Order number to match (e.g., "TC00001")
-        new_status: New status to set
-        status_field: Column to update ("Status" or "Payment Status")
-        tracking_id: Optional tracking ID to add when shipping
-
-    Returns:
-        tuple: (success_count, list of updated order IDs)
     """
-    orders_df = conn.read(worksheet="Tumble_cup", ttl=0)
-
-    matching_orders = orders_df[orders_df["Order Number"].astype(str).str.contains(order_number, case=False)]
+    orders_df = get_orders()
+    matching_orders = orders_df[orders_df["Order Number"].astype(str).str.contains(order_number, case=False, na=False)]
 
     if matching_orders.empty:
         return 0, []
+
     matching_ids = matching_orders["ID"].tolist()
-    orders_df.loc[orders_df["ID"].isin(matching_ids), status_field] = new_status
+    success_count = 0
 
-    if tracking_id and status_field == "Status" and new_status == "Shipped" and partner:
-        if 'Tracking ID' not in orders_df.columns:
-            orders_df['Tracking ID'] = ""
-        orders_df.loc[orders_df["ID"].isin(matching_ids), "Tracking ID"] = tracking_id
-        orders_df.loc[orders_df["ID"].isin(matching_ids), "Tracking Partner"] = partner
+    for page_id in matching_ids:
+        property_name = 'Status' if status_field == 'Status' else 'Payment Status'
+        if update_notion_property(page_id, property_name, new_status, 'select'):
+            success_count += 1
 
-    conn.update(worksheet="Tumble_cup", data=orders_df)
+            # Update tracking info if provided
+            if tracking_id and status_field == "Status" and new_status == "Shipped" and partner:
+                update_notion_property(page_id, 'Tracking ID', tracking_id, 'rich_text')
+                update_notion_property(page_id, 'Tracking Partner', partner, 'rich_text')
 
-    return len(matching_ids), matching_ids
+    return success_count, matching_ids
 
 
 def delete_order(order_id):
-    """
-    Delete all orders with matching order number
-    :param order_id:
-    :return: None
-
-    """
-    orders_df = conn.read(worksheet="Tumble_cup", ttl=0)
-    if order_id in orders_df["ID"].values:
-        orders_df = orders_df[orders_df["ID"] != order_id]
-        conn.update(worksheet="Tumble_cup", data=orders_df)
+    """Archive (delete) an order in Notion"""
+    try:
+        notion.pages.update(page_id=order_id, archived=True)
         return True
-    return False
+    except Exception as e:
+        st.error(f"Error deleting order: {e}")
+        return False
 
 
 def send_email_notification(to_email, subject, content):
-    """
-    Send email notification
-    :param to_email: Clients email address
-    :param subject: Subject
-    :param content: Email content
-    :return: None
-    """
+    """Send email notification"""
     gmail_user = "teamtumblecup@gmail.com"
     try:
         app_password = st.secrets["Email"]["Password"]
-
         msg = EmailMessage()
         msg['Subject'] = subject
         msg['From'] = gmail_user
@@ -140,7 +226,7 @@ def send_email_notification(to_email, subject, content):
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
             smtp.login(gmail_user, app_password)
             smtp.send_message(msg)
-            return True
+        return True
     except Exception as e:
         st.error(f"Failed to send email: {e}")
         return False
@@ -158,9 +244,7 @@ def calculate_sales_metrics(orders_df):
         }
 
     orders_df['Base Price'] = pd.to_numeric(orders_df['Base Price'], errors='coerce')
-
     orders_df['Total Cost'] = orders_df['Item Name'].map(PRODUCT_COSTS) * orders_df['Item Quantity']
-
     orders_df['Profit'] = orders_df['Total'] - orders_df['Total Cost']
 
     total_sales = orders_df['Price'].sum()
@@ -176,14 +260,12 @@ def calculate_sales_metrics(orders_df):
 
     style_breakdown = None
     if 'Item Style' in orders_df.columns:
-
         style_df = orders_df.copy()
         if style_df['Item Style'].isna().any():
             style_df['Item Style'] = style_df['Item Style'].fillna('Regular')
 
-        custom_styles = style_df[style_df['Item Style'].str.contains('Custom|Hand painted|Handpainted',
-                                                                     case=False, na=False)]
-
+        custom_styles = style_df[
+            style_df['Item Style'].str.contains('Custom|Hand painted|Handpainted', case=False, na=False)]
         if not custom_styles.empty:
             style_breakdown = custom_styles.groupby(['Item Style', 'Item Name']).agg({
                 'Item Quantity': 'sum',
@@ -203,26 +285,37 @@ def calculate_sales_metrics(orders_df):
 
 
 def get_date_orders(date, month, year):
-    orders_df = conn.read(worksheet="Tumble_cup", ttl=0)
+    """Get orders for a specific date"""
+    orders_df = get_orders()
+    if orders_df.empty:
+        return pd.DataFrame()
+
+    orders_df["Order Date"] = pd.to_datetime(orders_df["Order Date"], format="ISO8601", errors='coerce')
+
+    orders_df = orders_df[orders_df["Order Date"].notna()]
 
     if orders_df.empty:
         return pd.DataFrame()
-    orders_df["Order Date"] = pd.to_datetime(orders_df["Order Date"], errors="coerce")
 
-    orders_df = orders_df[(orders_df["Order Date"].dt.day == date) & (orders_df["Order Date"].dt.month == month)
-                          & (orders_df["Order Date"].dt.year == year)
-                          ]
-
+    orders_df = orders_df[
+        (orders_df["Order Date"].dt.day == date) &
+        (orders_df["Order Date"].dt.month == month) &
+        (orders_df["Order Date"].dt.year == year)
+        ]
     return orders_df
 
 
+
 st.markdown("<h1 style='text-align: center;'>Tumble Cup Dashboard</h1>", unsafe_allow_html=True)
+
 image = Image.open("Tumblecup.jpeg")
 left_co, cent_co, last_co = st.columns(3)
 with cent_co:
     st.image(image, width=500)
 
 tab1, tab2, tab3, tab4 = st.tabs(["Admin", "Status Update", "Filter", "Analytics"])
+
+
 with st.sidebar:
     st.header("Filter Options")
     selected_month = st.selectbox(
@@ -231,6 +324,8 @@ with st.sidebar:
         index=current_month - 1,
         placeholder="Select Month"
     )
+    if st.button("🔃 Fetch Latest"):
+        st.cache_data.clear()
 
     selected_month_number = month_list.index(selected_month) + 1 if selected_month else None
     orders_df = get_orders(selected_month_number)
@@ -238,47 +333,56 @@ with st.sidebar:
     if not orders_df.empty:
         orders_df["Order Date"] = orders_df["Order Date"].dt.strftime("%d-%B-%Y")
 
-        search_term = st.text_input("Search by Name or Order Number", placeholder="Enter Search Term",
+        search_term = st.text_input("Search by Name or Order Number",
+                                    placeholder="Enter Search Term",
                                     key="search_term")
 
         if search_term:
-            orders_df = orders_df[orders_df['Name'].str.contains(search_term, case=False) |
-                                  orders_df['Order Number'].str.contains(search_term, case=False)]
-
+            orders_df = orders_df[
+                orders_df['Name'].str.contains(search_term, case=False, na=False) |
+                orders_df['Order Number'].str.contains(search_term, case=False, na=False)
+                ]
             if orders_df.empty:
                 st.warning("No such orders found!")
 
-        status_filter = st.multiselect("Filter by Status", options=orders_df['Order Status'].unique().tolist(),
-                                       default=orders_df['Order Status'].unique().tolist())
+        status_filter = st.multiselect("Filter by Status",
+                                       options=orders_df['Status'].unique().tolist(),
+                                       default=orders_df['Status'].unique().tolist())
+
         payment_filter = st.multiselect("Filter by Payment Status",
                                         options=orders_df['Payment Status'].unique().tolist(),
                                         default=orders_df['Payment Status'].unique().tolist())
 
-        filtered_df = orders_df[orders_df['Order Status'].isin(status_filter) &
-                                orders_df['Payment Status'].isin(payment_filter)]
+        filtered_df = orders_df[
+            orders_df['Status'].isin(status_filter) &
+            orders_df['Payment Status'].isin(payment_filter)
+            ]
     else:
         st.warning("No orders found!")
-# if 'password' not in st.session_state:
-#     password = f"{st.secrets["Password"]["Password"]}"
+        filtered_df = pd.DataFrame()
 
+# Session state for password
 if 'user_entered' not in st.session_state:
     st.session_state.user_entered = {}
 
+# Tab 1: Admin Login
 with tab1:
     st.header("Admin Login 🔑")
-    pwd = st.text_input(label="Enter password", type="password", placeholder="Enter Password", key="password")
+    pwd = st.text_input(label="Enter password", type="password",
+                        placeholder="Enter Password", key="password")
 
     if st.button("Login"):
         if str(pwd).strip():
             st.session_state.user_entered["password"] = pwd
 
-    if st.session_state.user_entered.get("password") == st.secrets["Password"]["Password"]:
-        st.success("Access granted! ✅")
-    elif pwd.strip() == "":
-        st.info("Enter Password!")
-    elif st.session_state.user_entered.get("password") != st.secrets["Password"]["Password"]:
-        st.warning("Access denied! ⛔")
+            if st.session_state.user_entered.get("password") == st.secrets["Password"]["Password"]:
+                st.success("Access granted! ✅")
+            else:
+                st.warning("Access denied! ⛔")
+        else:
+            st.info("Enter Password!")
 
+# Tab 2: Status Update
 with tab2:
     if st.session_state.user_entered.get("password") == st.secrets["Password"]["Password"]:
         st.header("Order Status Management")
@@ -287,56 +391,26 @@ with tab2:
             st.dataframe(filtered_df)
 
             st.subheader("Update by ID")
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
 
             with col1:
-                # order_id = st.number_input("Order ID", min_value=int(orders_df['ID'].min()),
-                #                            max_value=int(orders_df['ID'].max()) if not orders_df.empty else 1,
-                #                            step=1, key="status_order_id")
-                # payment_order_id = st.number_input("Payment Order ID", min_value=int(orders_df['ID'].min()),
-                #                                    max_value=int(orders_df['ID'].max()) if not orders_df.empty else 1,
-                #                                    step=1, key="payment_order_id")
-                delete_order_id = st.number_input("Delete Order ID", min_value=int(orders_df['ID'].min()),
-                                                  max_value=int(orders_df['ID'].max()) if not orders_df.empty else 1,
-                                                  step=1, key="delete_order_id")
-
-            # with col2:
-            #     new_status = st.selectbox("New Status",
-            #                               ["Pending", "Processing", "Shipped", "Delivered", "Cancelled"],
-            #                               key="new_status")
-            #     payment_new_status = st.selectbox("Payment New Status",
-            #                                       ["Pending", "Processing", "Confirmed", "Cancelled"],
-            #                                       key="payment_new_status")
+                delete_order_id = st.text_input("Delete Order ID (Notion Page ID)",
+                                                placeholder="Enter Notion page ID",
+                                                key="delete_order_id")
 
             with col2:
-                # if st.button("Update Status", key="update_status_btn"):
-                #     if update_order_status(order_id, new_status):
-                #         st.success(f"Order #{order_id} status updated to {new_status}")
-                #         customer_email = orders_df.loc[orders_df["ID"] == order_id, "Email"].values[0]
-                #         email_content = f"Your order #{order_id} status has been updated to {new_status}."
-                #         send_email_notification(customer_email, "Tumble Cup Order Status Update", email_content)
-                #         st.rerun()
-                #     else:
-                #         st.error(f"Failed to update order #{order_id}")
-                #
-                # if st.button("Update Payment Status", key="update_payment_btn"):
-                #     if update_payment_status(payment_order_id, payment_new_status):
-                #         st.success(f"Order #{payment_order_id} payment status updated to {payment_new_status}")
-                #         customer_email = orders_df.loc[orders_df["ID"] == payment_order_id, "Email"].values[0]
-                #         email_content = f"Your order #{payment_order_id} payment status has been updated to {payment_new_status}."
-                #         send_email_notification(customer_email, "Tumble Cup Payment Status Update", email_content)
-                #         st.rerun()
-                #     else:
-                #         st.error(f"Failed to update payment status for order #{payment_order_id}")
-
                 if st.button("Delete Order", key="delete_order_btn"):
-                    if delete_order(delete_order_id):
-                        st.success(f"Order #{delete_order_id} has been deleted")
-                        st.rerun()
+                    if delete_order_id:
+                        if delete_order(delete_order_id):
+                            st.success(f"Order #{delete_order_id} has been deleted")
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to delete order #{delete_order_id}")
                     else:
-                        st.error(f"Failed to delete order #{delete_order_id}")
+                        st.warning("Please enter an Order ID")
 
             st.divider()
+
             st.subheader("Update by Order Number")
             order_num_col1, order_num_col2, order_num_col3, order_num_col4 = st.columns(4)
 
@@ -347,7 +421,8 @@ with tab2:
 
                 if order_number:
                     matches = filtered_df[
-                        filtered_df["Order Number"].astype(str).str.contains(order_number, case=False)]
+                        filtered_df["Order Number"].astype(str).str.contains(order_number, case=False, na=False)
+                    ]
                     match_count = len(matches)
 
                     if match_count > 0:
@@ -367,19 +442,22 @@ with tab2:
                     order_num_status = st.selectbox("New Order Status",
                                                     ["Pending", "Processing", "Shipped", "Delivered", "Cancelled"],
                                                     key="order_num_order_status")
+
                     batch_tracking_id = None
                     partner = None
                     if order_num_status == "Shipped":
                         batch_tracking_id = st.text_input("Shipping/Tracking ID",
-                                                          placeholder="Enter tracking number for all matching orders",
+                                                          placeholder="Enter tracking number",
                                                           key="batch_tracking_id_input")
                         partner = st.text_input("Shipping Partner",
                                                 placeholder="Enter shipping partner",
                                                 key="shipping_partner_input")
+
                 if "Payment Status" in update_type:
                     order_num_payment_status = st.selectbox("New Payment Status",
                                                             ["Pending", "Processing", "Confirmed", "Cancelled"],
                                                             key="order_num_payment_status")
+
             with order_num_col4:
                 show_button = True
 
@@ -398,6 +476,7 @@ with tab2:
                 if show_button:
                     if st.button("Update All Matching Orders", key="update_by_order_num_btn"):
                         updates_made = False
+
                         if update_type in ["Order Status", "Both"]:
                             success_count, updated_ids = update_by_order_number(
                                 order_number,
@@ -412,30 +491,40 @@ with tab2:
                                 if batch_tracking_id and order_num_status == "Shipped":
                                     success_msg += f" with tracking ID: {batch_tracking_id} and Shipping Partner: {partner}"
                                 st.success(success_msg)
-
                                 updates_made = True
+
+                                # Send email notifications
                                 for order_id in updated_ids:
                                     try:
-                                        customer_email = orders_df.loc[orders_df["ID"] == order_id, "Email"].values[0]
-                                        order_num = orders_df.loc[orders_df["ID"] == order_id, "Order Number"].values[0]
+                                        order_row = orders_df[orders_df["ID"] == order_id]
+                                        if not order_row.empty:
+                                            customer_email = order_row["Email"].values[0]
+                                            order_num = order_row["Order Number"].values[0]
 
-                                        if order_num_status != "Shipped":
-                                            email_content = f"""
-                                                    <p>Dear Customer,</p>
-                                                    <p>Your order <strong>{order_num}</strong> status has been updated to <strong>{order_num_status}</strong>.</p>
-                                                    """
-                                        else:
-                                            email_content = f"""
-                                                    <p>Dear Customer,</p>
-                                                    <p>Your order <strong>{order_num}</strong> status has been updated to <strong>{order_num_status}</strong>.</p>
-                                                    <p>Your shipment is on its way! You can track your package using the tracking number: 
-                                                    <strong>{batch_tracking_id} via {partner}</strong></p>
-                                                    """
+                                            if order_num_status != "Shipped":
+                                                email_content = f"""
+                                                <html>
+                                                <body>
+                                                <p>Dear Customer,</p>
+                                                <p>Your order {order_num} status has been updated to {order_num_status}.</p>
+                                                </body>
+                                                </html>
+                                                """
+                                            else:
+                                                email_content = f"""
+                                                <html>
+                                                <body>
+                                                <p>Dear Customer,</p>
+                                                <p>Your order {order_num} status has been updated to {order_num_status}.</p>
+                                                <p>Your shipment is on its way! You can track your package using the tracking number: {batch_tracking_id} via {partner}</p>
+                                                </body>
+                                                </html>
+                                                """
 
-                                        email_content += "<p>Thank you for shopping with Tumble Cup!</p>"
-                                        send_email_notification(customer_email, "Tumble Cup Order Status Update",
-                                                                email_content)
-                                        break
+                                            email_content += "<p>Thank you for shopping with Tumble Cup!</p></body></html>"
+                                            send_email_notification(customer_email, "Tumble Cup Order Status Update",
+                                                                    email_content)
+                                            break
                                     except Exception as e:
                                         st.warning(f"Could not send email for order #{order_id}: {str(e)}")
 
@@ -451,18 +540,26 @@ with tab2:
                                     f"Updated payment status to '{order_num_payment_status}' for {success_count} orders")
                                 updates_made = True
 
+                                # Send email notifications
                                 for order_id in updated_ids:
                                     try:
-                                        customer_email = orders_df.loc[orders_df["ID"] == order_id, "Email"].values[0]
-                                        order_num = orders_df.loc[orders_df["ID"] == order_id, "Order Number"].values[0]
-                                        email_content = f"""
-                                                <p>Dear Customer,</p>
-                                                <p>Your order <strong>{order_num}</strong> payment status has been updated to <strong>{order_num_payment_status}</strong>.</p>
-                                                <p>Thank you for shopping with Tumble Cup!</p>
-                                                """
-                                        send_email_notification(customer_email, "Tumble Cup Payment Status Update",
-                                                                email_content)
-                                        break
+                                        order_row = orders_df[orders_df["ID"] == order_id]
+                                        if not order_row.empty:
+                                            customer_email = order_row["Email"].values[0]
+                                            order_num = order_row["Order Number"].values[0]
+
+                                            email_content = f"""
+                                            <html>
+                                            <body>
+                                            <p>Dear Customer,</p>
+                                            <p>Your order {order_num} payment status has been updated to {order_num_payment_status}.</p>
+                                            <p>Thank you for shopping with Tumble Cup!</p>
+                                            </body>
+                                            </html>
+                                            """
+                                            send_email_notification(customer_email, "Tumble Cup Payment Status Update",
+                                                                    email_content)
+                                            break
                                     except Exception as e:
                                         st.warning(f"Could not send email for order #{order_id}: {str(e)}")
 
@@ -470,6 +567,7 @@ with tab2:
                             st.rerun()
                         else:
                             st.error(f"No orders found matching '{order_number}'")
+
             if st.button("Export Orders to CSV", key="export_csv_status"):
                 csv = filtered_df.to_csv(index=False)
                 st.download_button(
@@ -482,6 +580,8 @@ with tab2:
             st.info("No orders found for the selected month.")
     else:
         st.warning("Access denied! ⛔")
+
+# Tab 3: Filter
 with tab3:
     if st.session_state.user_entered.get("password") == st.secrets["Password"]["Password"]:
         st.header("Order Filtering 🥅")
@@ -491,23 +591,22 @@ with tab3:
             dd = date.day
             month = date.month
             year = date.year
+            df = get_date_orders(dd, month, year)
 
-        df = get_date_orders(dd, month, year)
-        if df.empty:
-            st.error(f"No orders found for {dd}-{month}-{year}")
-        else:
-            st.dataframe(df)
+            if df.empty:
+                st.error(f"No orders found for {dd}-{month}-{year}")
+            else:
+                st.dataframe(df)
     else:
         st.warning("Access denied! ⛔")
 
+
 with tab4:
     if st.session_state.user_entered.get("password") == st.secrets["Password"]["Password"]:
-        st.header("Order Status Management")
         st.header("Sales Analytics")
 
         if not orders_df.empty:
             st.subheader("Sales Metrics")
-
             confirmed_orders = filtered_df[filtered_df['Payment Status'] == 'Confirmed'].copy()
             metrics = calculate_sales_metrics(confirmed_orders)
 
@@ -532,96 +631,48 @@ with tab4:
                 st.subheader("Profit by Product")
                 st.bar_chart(chart_data[['Profit']])
 
-                if 'style_breakdown' in metrics and not metrics['style_breakdown'].empty:
-                    st.subheader("Custom & Handpainted Items Analysis")
-                    metrics_df_style = metrics['style_breakdown']
+            if 'style_breakdown' in metrics and not metrics['style_breakdown'].empty:
+                st.subheader("Custom & Handpainted Items Analysis")
+                metrics_df_style = metrics['style_breakdown']
+                metrics_df_style.index = range(1, len(metrics_df_style) + 1)
+                st.dataframe(metrics_df_style)
 
-                    metrics_df_style.index = range(1, len(metrics_df_style) + 1)
-
-                    st.dataframe(metrics_df_style)
-
-                    st.subheader("Custom & Handpainted Items Comparison")
-                    style_chart = metrics['style_breakdown'].groupby('Item Style').agg({
-                        'Total Quantity': 'sum',
-                        'Profit': 'sum'
-                    }).reset_index()
-
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.subheader("Quantity by Style")
-                        st.bar_chart(style_chart.set_index('Item Style')['Total Quantity'])
-
-                    with col2:
-                        st.subheader("Profit by Style")
-                        st.bar_chart(style_chart.set_index('Item Style')['Profit'])
-                    if len(style_chart) > 1:
-                        style_chart['Profit per Item'] = style_chart['Profit'] / style_chart['Total Quantity']
-                        st.subheader("Profitability Analysis")
-                        st.bar_chart(style_chart.set_index('Item Style')['Profit per Item'])
-                        style_chart['Profit %'] = (style_chart['Profit'] / style_chart['Profit'].sum()) * 100
-                        style_chart['Quantity %'] = (style_chart['Total Quantity'] / style_chart[
-                            'Total Quantity'].sum()) * 100
-
-                        st.subheader("Contribution Analysis")
-                        contribution_df = style_chart[['Item Style', 'Profit %', 'Quantity %']]
-                        st.dataframe(contribution_df)
+                st.subheader("Custom & Handpainted Items Comparison")
+                style_chart = metrics['style_breakdown'].groupby('Item Style').agg({
+                    'Total Quantity': 'sum',
+                    'Profit': 'sum'
+                }).reset_index()
 
                 col1, col2 = st.columns(2)
-
                 with col1:
-                    st.subheader("Order Status Distribution")
-                    status_counts = filtered_df['Status'].value_counts().reset_index()
-                    status_counts.columns = ['Status', 'Count']
-                    st.bar_chart(status_counts.set_index('Status'))
-
+                    st.subheader("Quantity by Style")
+                    st.bar_chart(style_chart.set_index('Item Style')['Total Quantity'])
                 with col2:
-                    st.subheader("Payment Status Distribution")
-                    payment_counts = filtered_df['Payment Status'].value_counts().reset_index()
-                    payment_counts.columns = ['Payment Status', 'Count']
-                    st.bar_chart(payment_counts.set_index('Payment Status'))
+                    st.subheader("Profit by Style")
+                    st.bar_chart(style_chart.set_index('Item Style')['Profit'])
 
-                st.subheader("Cost vs Profit Ratio")
-                if metrics['total_sales'] > 0:
-                    pie_data = {
-                        'Category': ['Cost', 'Profit'],
-                        'Value': [metrics['total_costs'], metrics['total_profit']]
-                    }
-                    pie_df = pd.DataFrame(pie_data)
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("Order Status Distribution")
+                status_counts = filtered_df['Status'].value_counts().reset_index()
+                status_counts.columns = ['Status', 'Count']
+                st.bar_chart(status_counts.set_index('Status'))
 
-                    cost_percentage = (metrics['total_costs'] / metrics['total_sales']) * 100
-                    profit_percentage = (metrics['total_profit'] / metrics['total_sales']) * 100
+            with col2:
+                st.subheader("Payment Status Distribution")
+                payment_counts = filtered_df['Payment Status'].value_counts().reset_index()
+                payment_counts.columns = ['Payment Status', 'Count']
+                st.bar_chart(payment_counts.set_index('Payment Status'))
 
-                    col1, col2 = st.columns([3, 2])
-
-                    with col1:
-                        fig = {
-                            'data': [{
-                                'values': pie_df['Value'],
-                                'labels': pie_df['Category'],
-                                'type': 'pie',
-                                'hole': 0.4,
-                                'marker': {'colors': ['#FF6B6B', '#4CAF50']}
-                            }],
-                            'layout': {'title': 'Cost vs Profit Distribution'}
-                        }
-                        st.plotly_chart(fig, use_container_width=True)
-
-                    with col2:
-                        st.metric("Cost Percentage", f"{cost_percentage:.2f}%")
-                        st.metric("Profit Percentage", f"{profit_percentage:.2f}%")
-                        st.metric("Profit Margin", f"{(profit_percentage):.2f}%")
-                else:
-                    st.info("No sales data available to calculate cost vs profit ratio.")
-                if st.button("Export Analytics to CSV", key="export_csv_analytics"):
-                    analytics_csv = metrics_df.to_csv(index=False)
+            if st.button("Export Analytics to CSV", key="export_csv_analytics"):
+                if not metrics['product_breakdown'].empty:
+                    analytics_csv = metrics['product_breakdown'].to_csv(index=False)
                     st.download_button(
                         label="Download Analytics CSV",
                         data=analytics_csv,
                         file_name=f"tumble_cup_analytics_{datetime.today().strftime('%Y-%m-%d')}.csv",
                         mime="text/csv"
                     )
-            else:
-                st.info("No confirmed orders to show product breakdown.")
         else:
             st.info("No orders found for the selected month.")
     else:

@@ -2,3 +2,4 @@ pandas==2.2.3
 st-gsheets-connection==0.1.0
 streamlit==1.44.1
 plotly
+reportlab
